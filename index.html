@@ -1362,7 +1362,8 @@ async function procesarDocumento(file, slotDef, req, onStep, onCampo, popts = {}
         Object.entries(r.campos).forEach(([k, c]) => { if (!campos[k] || !campos[k].valor) campos[k] = c; });
         motor = 'Lectura real · capa de texto del PDF + IA documental (Claude)'; usoIA = true;
       } catch (e) { if (cancelado()) throw {code: 'cancelado'}; iaError = e;
-        if (tipo === 'OTRO') { tipo = tipoSinLectura(); confClasif = 0.5; campos = {}; (CAMPOS_TIPO[tipo] || []).forEach(k => campos[k] = {valor: '', conf: 0, legible: false}); sinLectura = true; motor = 'Lectura automática no disponible: ' + iaMotivo(e) + '. Pendiente de verificación manual.'; }
+        if (tipo === 'OTRO' && String(texto || '').replace(/\s/g, '').length > 150) { motor = 'Se leyó el texto del PDF y no corresponde a ninguno de los documentos solicitados.'; } // contenido legible y ajeno: se rechaza (R1)
+        else if (tipo === 'OTRO') { tipo = tipoSinLectura(); confClasif = 0.5; campos = {}; (CAMPOS_TIPO[tipo] || []).forEach(k => campos[k] = {valor: '', conf: 0, legible: false}); sinLectura = true; motor = 'Lectura automática no disponible: ' + iaMotivo(e) + '. Pendiente de verificación manual.'; }
       }
     } else { await step('extraer'); for (const [k, c] of Object.entries(campos)) { if (cancelado()) throw {code: 'cancelado'}; emitir(k, c, tipo); await sleep(70); } }
   } else {
