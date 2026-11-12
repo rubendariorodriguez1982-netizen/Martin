@@ -1,0 +1,7 @@
+# Repositorio plano (subido desde la web de GitHub): la página y la función viven en la raíz.
+[build]
+  publish = "."
+  functions = "."
+
+[functions]
+  node_bundler = "esbuild"
