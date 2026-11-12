@@ -38,6 +38,15 @@ export function crearApi(store, clave, ia = {}) {
     const url = new URL(req.url); const p = url.pathname.replace(/^\/(?:\.netlify\/functions\/api|api)\/?/, '').split('/').filter(Boolean).map(decodeURIComponent); const m = req.method;
     try {
       if (p[0] === 'estado') return json({ ok: true, panelConfigurado: !!clave, panel: panel(req), ia: !!ia.key });
+      if (p[0] === 'diag-ia' && m === 'GET') { // diagnóstico de la conexión con la IA (llamada mínima, sin datos)
+        if (!ia.key) return json({ configurada: false });
+        const base = (ia.base || 'https://api.anthropic.com').replace(/\/+$/, ''); const out = [];
+        for (const model of [...new Set([ia.modelo, 'claude-haiku-5-5', 'claude-sonnet-5-5', 'claude-haiku-4-5', 'claude-sonnet-4-5-20250929'].filter(Boolean))]) {
+          const r = await (ia.fetch || fetch)(base + '/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': ia.key, 'anthropic-version': '2023-06-01' }, body: JSON.stringify({ model, max_tokens: 5, messages: [{ role: 'user', content: 'Responde: ok' }] }) });
+          out.push({ model, status: r.status, body: (await r.text()).slice(0, 300) }); if (r.ok) break;
+        }
+        return json({ configurada: true, gateway: !!ia.base, baseHost: ia.base ? new URL(base).host : 'api.anthropic.com', intentos: out });
+      }
       if (p[0] === 'ia' && m === 'POST') {
         if (!ia.key) return err(501, 'Lectura con IA no configurada (ANTHROPIC_API_KEY).');
         const tk = req.headers.get('x-token'); const okTok = tk && tokOk(tk) && await store.get('tok/' + tk, { type: 'json' });
