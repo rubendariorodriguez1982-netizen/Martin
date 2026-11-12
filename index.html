@@ -1285,7 +1285,7 @@ function iaInit() {
         const h = {'content-type': 'application/json'}; if (Remoto.clave) h['x-clave'] = Remoto.clave; if (Remoto.token) h['x-token'] = Remoto.tokenEscritura || Remoto.token;
         const r = await fetch(Remoto.base() + '/ia', {method: 'POST', headers: h, body: JSON.stringify({prompt: input, imagenes: imgs}), signal: opts.signal});
         if (!r.ok) { let m = ''; try { m = (await r.json()).error; } catch (e) {} throw {code: r.status === 429 ? 'rate_limited' : 'servidor', message: m}; }
-        const {text} = await r.json(); opts.onText && opts.onText({text, delta: text}); return {text}; };
+        const rd = r.body.getReader(), dec = new TextDecoder(); let text = ''; for (;;) { const {done, value} = await rd.read(); if (done) break; const delta = dec.decode(value, {stream: true}); text += delta; opts.onText && opts.onText({text, delta}); } return {text}; };
       return IA.fn; }
     IA.modo = 'local'; IA.fn = null; return null;
   })();
@@ -1386,11 +1386,12 @@ async function iaExtraer({esperado, imagen, texto, onTipo, onCampo, signal, nomb
   const opts = {modelTier: 'quick', signal, onText: ({delta}) => { const ls = (pend + delta).split('\n'); pend = ls.pop(); ls.forEach(eat); }};
   if (imagen) opts.images = imagen;
   try { await s(input, opts); if (pend) eat(pend); if (!out.tipo) throw {code: 'invalid_json'}; }
-  catch (e) { if (IA.modo === 'servidor' && imagen && !(signal && signal.aborted)) return ocrLocalExtraer({esperado, imagen, nombre, onTipo, onCampo, signal}); throw e; } // si el servicio de IA falla, OCR en el navegador
+  catch (e) { if (IA.modo === 'servidor' && imagen && !(signal && signal.aborted)) { console.warn('IA servidor', e); const r = await ocrLocalExtraer({esperado, imagen, nombre, onTipo, onCampo, signal}); r.iaFallo = (e && (e.message || e.code)) || 'error'; return r; } throw e; } // si el servicio de IA falla, OCR en el navegador
   return out;
 }
 function iaMotivo(e) {
   const M = {demo: 'documento de ejemplo del escenario', no_disponible: 'lectura automática no disponible en esta vista', servidor: 'el servicio de lectura no respondió', not_granted: 'no se autorizó el uso de Claude en esta página', images_unavailable: 'esta vista no puede enviar imágenes a Claude', rate_limited: 'se alcanzó el límite de uso; intenta más tarde', image_rejected: 'la imagen no es válida o supera el tamaño permitido', refused: 'el modelo no procesó este documento', session_expired: 'la sesión expiró; vuelve a iniciar sesión', sampling_disabled: 'Claude no está habilitado para esta cuenta', invalid_json: 'la respuesta no tuvo el formato esperado'};
+  if (e && e.code === 'servidor' && e.message) return `el servicio de lectura no respondió (${e.message})`;
   return M[e && e.code] || `error de lectura (${(e && e.code) || 'desconocido'})`;
 }
 function slotPara(req, tipo) { const pj = req.tipoPersona === 'juridica'; return ({CEDULA: pj ? 'ccrep' : 'cc', RUT: 'rut', BANCARIA: 'banco', CAMARA: pj ? 'ccio' : null, ACCIONARIA: pj ? 'accion' : null})[tipo] || null; }
@@ -1414,7 +1415,7 @@ async function procesarDocumento(file, slotDef, req, onStep, onCampo, popts = {}
   } else {
     const url = URL.createObjectURL(file); try { preview = await imgToDataUrl(url); } finally { URL.revokeObjectURL(url); }
     const tiposIA = (IA.limits && IA.limits.images && IA.limits.images.mediaTypes) || ['image/jpeg', 'image/png', 'image/webp'];
-    imgBlob = tiposIA.includes(file.type) && file.size < 15000000 ? file : new Blob([dataUrlToBytes(preview)], {type: 'image/jpeg'});
+    imgBlob = tiposIA.includes(file.type) && file.size < (APP.standalone ? 1500000 : 15000000) ? file : new Blob([dataUrlToBytes(preview)], {type: 'image/jpeg'}); // en el dominio propio la imagen viaja al servidor: se envía la versión reducida
   }
   await step('clasificar');
   const esperado = slotDef.tipo; const fx = file.sampleKey && OCR_FIXTURES[file.sampleKey];
@@ -1444,7 +1445,7 @@ async function procesarDocumento(file, slotDef, req, onStep, onCampo, popts = {}
       await iaInit(); if (fx && IA.modo === 'local') throw {code: 'demo'}; // documentos de ejemplo: datos fijos del escenario
       const r = await iaExtraer({esperado, imagen: imgBlob, signal, nombre: file.name, onTipo: (t, c) => { tipo = t; onStep && onStep('extraer', {ia: true, tipo: t}); }, onCampo: (k, c, o) => emitir(k, c, o.tipo)});
       tipo = r.tipo; confClasif = r.conf; campos = r.campos;
-      if (r.local) { ocrLocal = true; textoOCR = r.texto || ''; motor = 'OCR real en el navegador (Tesseract) · confianza ' + Math.round((r.confOCR || 0) * 100) + ' %'; if (!Object.values(campos).some(c => c && c.valor)) { sinLectura = true; motor += ' · no se reconocieron datos: verificación manual'; } }
+      if (r.local) { ocrLocal = true; textoOCR = r.texto || ''; if (r.iaFallo) iaError = {code: 'servidor', message: r.iaFallo}; motor = 'OCR real en el navegador (Tesseract) · confianza ' + Math.round((r.confOCR || 0) * 100) + ' %'; if (!Object.values(campos).some(c => c && c.valor)) { sinLectura = true; motor += ' · no se reconocieron datos: verificación manual'; } }
       else { usoIA = true; motor = (IA.modo === 'servidor' ? 'IA documental real · Claude (servidor STRADATA)' : 'IA documental real · Claude visión') + (metodo === 'pdf_escaneado' ? ' sobre PDF escaneado' : ' (OCR, clasificación y extracción)'); }
     } catch (e) {
       if (cancelado()) throw {code: 'cancelado'};

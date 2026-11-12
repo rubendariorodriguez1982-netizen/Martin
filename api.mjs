@@ -60,8 +60,15 @@ export function crearApi(store, clave, ia = {}) {
         let ultimo = 0;
         for (const model of modelos) {
           const r = await (ia.fetch || fetch)(base + '/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': ia.key, 'anthropic-version': '2023-06-01' },
-            body: JSON.stringify({ model, max_tokens: 2000, messages: [{ role: 'user', content }] }) });
-          if (r.ok) { const j = await r.json(); return json({ text: (j.content || []).filter(c => c.type === 'text').map(c => c.text).join(''), modelo: model }); }
+            body: JSON.stringify({ model, max_tokens: 1500, stream: true, messages: [{ role: 'user', content }] }) });
+          if (r.ok) { // se reenvía el texto a medida que llega (el formulario se llena en vivo y no se agota el tiempo de la función)
+            const enc = new TextEncoder(), dec = new TextDecoder();
+            const flujo = new ReadableStream({ async start(ctrl) { const rd = r.body.getReader(); let buf = '';
+              try { for (;;) { const { done, value } = await rd.read(); if (done) break; buf += dec.decode(value, { stream: true }); let i;
+                while ((i = buf.indexOf('\n')) >= 0) { const l = buf.slice(0, i).trim(); buf = buf.slice(i + 1); if (!l.startsWith('data:')) continue; try { const ev = JSON.parse(l.slice(5)); if (ev.type === 'content_block_delta' && ev.delta && ev.delta.text) ctrl.enqueue(enc.encode(ev.delta.text)); } catch (e) {} } } }
+              finally { ctrl.close(); } } });
+            return new Response(flujo, { headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store', 'x-modelo': model } });
+          }
           ultimo = r.status; if (![400, 404].includes(r.status)) break; // modelo no disponible: se intenta el siguiente
         }
         return err(ultimo === 429 ? 429 : 502, 'El servicio de IA no respondió (' + ultimo + ').');
