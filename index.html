@@ -1280,7 +1280,8 @@ const IA = {fn: null, limits: null, ready: null};
 function iaInit() {
   if (!IA.ready && typeof enlaceServido === 'function' && enlaceServido()) IA.ready = (async () => { // dominio propio (Netlify): Claude en el servidor si hay clave de API; si no, OCR en el navegador
     const est = await (typeof Remoto !== 'undefined' ? Remoto.estado() : null);
-    if (est && est.ia) { IA.modo = 'servidor'; IA.limits = {images: {mediaTypes: ['image/jpeg', 'image/png', 'image/webp']}};
+    // se intenta siempre la IA del servidor (la credencial de Netlify puede tardar en aparecer); si falla, OCR en el navegador
+    if (est) { IA.modo = 'servidor'; IA.limits = {images: {mediaTypes: ['image/jpeg', 'image/png', 'image/webp']}};
       IA.fn = async (input, opts = {}) => { const imgs = []; for (const b of (opts.images ? [].concat(opts.images) : [])) imgs.push({tipo: b.type || 'image/jpeg', datos: await blobB64(b)});
         const h = {'content-type': 'application/json'}; if (Remoto.clave) h['x-clave'] = Remoto.clave; if (Remoto.token) h['x-token'] = Remoto.tokenEscritura || Remoto.token;
         const r = await fetch(Remoto.base() + '/ia', {method: 'POST', headers: h, body: JSON.stringify({prompt: input, imagenes: imgs}), signal: opts.signal});
