@@ -1172,8 +1172,10 @@ async function pdfPreview(pdf, width = 900) {
   await page.render({canvasContext: ctx, viewport: vp}).promise; return c.toDataURL('image/jpeg', 0.72);
 }
 function clasificar(txt, esperado, nombre) {
-  const t = normTxt(txt); const s = {RUT: 0, CAMARA: 0, CEDULA: 0, BANCARIA: 0, ACCIONARIA: 0};
-  if (/CERTIFICACION BANCARIA|CERTIFICADO BANCARIO/.test(t)) s.BANCARIA += 4; if (/CUENTA (DE )?(AHORROS|CORRIENTE)/.test(t)) s.BANCARIA += 2; if (/NUMERO DE (LA )?CUENTA/.test(t)) s.BANCARIA += 1; if (/\bTITULAR\b/.test(t)) s.BANCARIA += 1;
+  const t = normTxt(txt).replace(/\s+/g, ' '); const s = {RUT: 0, CAMARA: 0, CEDULA: 0, BANCARIA: 0, ACCIONARIA: 0};
+  if (/CERTIFICACION BANCARIA|CERTIFICADO BANCARIO|CONSTANCIA BANCARIA|REFERENCIA BANCARIA|CERTIFICACION DE CUENTA/.test(t)) s.BANCARIA += 4; if (/CUENTA (DE )?(AHORROS?|CORRIENTE)/.test(t)) s.BANCARIA += 3; if (/\bCTA\.? ?(CTE|AHO|CORRIENTE|AHORRO)/.test(t)) s.BANCARIA += 2;
+  if (/(NUMERO|NO\.?|N°|NRO\.?) (DE )?(LA )?CUENTA|CUENTA (NO|N°|NRO|NUMERO)/.test(t)) s.BANCARIA += 1; if (/\bTITULAR\b|FECHA DE APERTURA|SALDO PROMEDIO/.test(t)) s.BANCARIA += 1;
+  if (/BANCO DE BOGOTA|BANCOLOMBIA|DAVIVIENDA|BBVA|SCOTIABANK|ITAU|COLPATRIA|BANCO DE OCCIDENTE|BANCO POPULAR|AV VILLAS|BANCO CAJA SOCIAL|BANCO AGRARIO|GNB SUDAMERIS|PICHINCHA|FALABELLA|SERFINANZA|BANCO W\b|BANCAMIA|NEQUI|LULO|BANCO UNION|COOPCENTRAL/.test(t)) s.BANCARIA += 1;
   if (/PARTICIPACION ACCIONARIA|COMPOSICION ACCIONARIA/.test(t)) s.ACCIONARIA += 4; if (/LIBRO DE (REGISTRO DE )?ACCIONISTAS/.test(t)) s.ACCIONARIA += 2; if (/\d\s+ACCIONES\b/.test(t)) s.ACCIONARIA += 1;
   if (/REGISTRO UNICO TRIBUTARIO/.test(t)) s.RUT += 3; if (/\bDIAN\b/.test(t)) s.RUT += 1; if (/IDENTIFICACION TRIBUTARIA/.test(t)) s.RUT += 2; if (/RESPONSABILIDADES/.test(t)) s.RUT += 1;
   if (/EXISTENCIA Y REPRESENTACION LEGAL/.test(t)) s.CAMARA += 3; if (/CAMARA DE COMERCIO/.test(t)) s.CAMARA += 2; if (/MATRICULA/.test(t)) s.CAMARA += 1;
@@ -1227,15 +1229,20 @@ function parseCedulaTexto(t) {
   const g = re => { const m = t.match(re); return m ? m[1].trim() : ''; };
   return {numero: campo(soloDig(g(/N[UÚ]MERO[ \t]*:?[ \t]*([\d\.]{6,14})/i)), 0.9), apellidos: campo(g(/APELLIDOS[ \t]*:?[ \t]*([^\n]+)/i), 0.9), nombres: campo(g(/NOMBRES[ \t]*:?[ \t]*([^\n]+)/i), 0.9), fechaNacimiento: campo(parseFechaES(g(/NACIMIENTO[ \t]*:?[ \t]*([^\n]+)/i)), 0.85), fechaExpedicion: campo('', 0), lugarExpedicion: campo('', 0)};
 }
-function parseBancaria(t) {
-  const g = re => { const m = t.match(re); return m ? m[1].trim() : ''; };
-  const banco = g(/^\s*((?:BANCO|BANCOLOMBIA|DAVIVIENDA|BBVA|SCOTIABANK|ITA[UÚ]|NEQUI|BANCAMIA|COLPATRIA)[^\n]*)$/im);
-  const tc = g(/Tipo de cuenta[ \t]*:?[ \t]*(?:Cuenta de )?([A-Za-zÁÉÍÓÚáéíóú]+)/i) || g(/Cuenta (?:de )?(ahorros|corriente)/i);
-  const tid = g(/Identificaci[oó]n del titular[ \t]*:?[ \t]*([^\n]+)/i);
+function parseBancaria(t0) { // formato del prototipo y redacción usual de los bancos ("certifica que X, identificado con NIT …, tiene la cuenta corriente No. …")
+  const t = String(t0 || ''); const u = t.replace(/[ \t]+/g, ' ');
+  const g = re => { const m = u.match(re); return m ? m[1].trim() : ''; };
+  const banco = g(/^\s*((?:BANCO|BANCOLOMBIA|DAVIVIENDA|BBVA|SCOTIABANK|ITA[UÚ]|NEQUI|BANCAMIA|COLPATRIA)[^\n]{0,40})$/im) || g(/\b(Banco de Bogot[aá]|Bancolombia|Davivienda|BBVA Colombia|BBVA|Scotiabank Colpatria|Ita[uú]|Banco de Occidente|Banco Popular|Banco AV Villas|Banco Caja Social|Banco Agrario|Banco GNB Sudameris|Banco Pichincha|Banco Falabella|Banco Serfinanza)\b/i);
+  const tc = g(/Tipo de cuenta ?:? ?(?:Cuenta de )?([A-Za-zÁÉÍÓÚáéíóú]+)/i) || g(/Cuenta (?:de )?(ahorros?|corriente)/i) || (/\bCTA\.? ?(CTE|CORRIENTE)/i.test(u) ? 'corriente' : /\bCTA\.? ?(AHO|AHORRO)/i.test(u) ? 'ahorros' : '');
+  const tidTxt = g(/Identificaci[oó]n del titular ?:? ?([^\n]+)/i) || g(/identificad[oa]s? (?:con|bajo)[^\d\n]{0,40}([\d][\d\.\- ]{5,16}\d)/i) || g(/(?:NIT|C\.? ?C\.?|c[eé]dula de ciudadan[ií]a)\.? ?(?:No\.?|N°|n[uú]mero)? ?:? ?([\d][\d\.\- ]{5,16}\d)/i);
+  const num = g(/N[uú]mero de (?:la )?cuenta ?:? ?([\d][\d \-]{4,24}\d)/i) || g(/cuenta (?:de )?(?:ahorros?|corriente)[^\d\n]{0,25}?(?:No\.?|N°|Nro\.?|n[uú]mero|#)? ?:? ?([\d][\d\-]{4,24}\d)/i) || g(/cuenta (?:No\.?|N°|Nro\.?|n[uú]mero|#) ?:? ?([\d][\d \-]{4,24}\d)/i);
+  const titular = g(/Titular ?: ?([^\n]+)/i) || g(/a nombre de ([^\n,]{4,90})/i) || g(/certifica(?:mos)?(?: que)?:?\s*(?:el |la |los )?(?:señor |señora |sociedad |empresa |cliente )?([^\n,]{4,90}?),? (?:identificad|con NIT|NIT|C\.? ?C)/i);
+  const tid0 = tidTxt.replace(/\s/g, ''); const tidDig = soloDig(tid0.replace(/-\d$/, ''));
+  const fe = g(/Fecha de expedici[oó]n ?:? ?([^\n]+)/i) || g(/(?:se expide|expedida|expide)[^\n]{0,60}?(\d{1,2} de [a-záéíóú]+ de \d{4}|\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4})/i) || g(/\b(\d{1,2} de [a-záéíóú]+ de \d{4})/i);
   return {
-    banco: campo(banco, 0.95), titular: campo(g(/Titular[ \t]*:[ \t]*([^\n]+)/i), 0.96), titularId: campo(soloDig((tid.match(/[\d\.]{6,}/) || [''])[0]), 0.96),
-    tipoCuenta: campo(tc ? titulo(tc) : '', 0.95), numeroCuenta: campo(soloDig(g(/N[uú]mero de (?:la )?cuenta[ \t]*:?[ \t]*([\d \-]{5,25})/i)), 0.97),
-    estadoCuenta: campo(g(/Estado de la cuenta[ \t]*:?[ \t]*([A-ZÁÉÍÓÚ]+)/i), 0.95), fechaExpedicion: campo(parseFechaES(g(/Fecha de expedici[oó]n[ \t]*:?[ \t]*([^\n]+)/i)), 0.95),
+    banco: campo(banco, 0.95), titular: campo(titular, titular ? 0.9 : 0), titularId: campo(tidDig, tidDig ? 0.9 : 0),
+    tipoCuenta: campo(tc ? titulo(tc.replace(/^ahorro$/i, 'ahorros')) : '', 0.95), numeroCuenta: campo(soloDig(num), num ? 0.93 : 0),
+    estadoCuenta: campo(g(/Estado de la cuenta ?:? ?([A-ZÁÉÍÓÚ]+)/i) || (/\b(activa|vigente)\b/i.test(u) ? 'ACTIVA' : /\b(cancelada|inactiva|bloqueada)\b/i.test(u) ? (u.match(/\b(cancelada|inactiva|bloqueada)\b/i)[1].toUpperCase()) : ''), 0.85), fechaExpedicion: campo(parseFechaES(fe), fe ? 0.9 : 0),
   };
 }
 function parseAccionistasTxt(t) { // líneas "1. NOMBRE - C.C. 71.654.320 - 35.000 acciones - 35,00 %" (también separadas por " || ")
@@ -1270,6 +1277,17 @@ Object.assign(ETQ, {banco: 'Banco', titular: 'Titular', titularId: 'Identificaci
 /* ---------- IA documental en tiempo real (Claude visión vía capacidad `sample`) ---------- */
 const IA = {fn: null, limits: null, ready: null};
 function iaInit() {
+  if (!IA.ready && typeof enlaceServido === 'function' && enlaceServido()) IA.ready = (async () => { // dominio propio (Netlify): Claude en el servidor si hay clave de API; si no, OCR en el navegador
+    const est = await (typeof Remoto !== 'undefined' ? Remoto.estado() : null);
+    if (est && est.ia) { IA.modo = 'servidor'; IA.limits = {images: {mediaTypes: ['image/jpeg', 'image/png', 'image/webp']}};
+      IA.fn = async (input, opts = {}) => { const imgs = []; for (const b of (opts.images ? [].concat(opts.images) : [])) imgs.push({tipo: b.type || 'image/jpeg', datos: await blobB64(b)});
+        const h = {'content-type': 'application/json'}; if (Remoto.clave) h['x-clave'] = Remoto.clave; if (Remoto.token) h['x-token'] = Remoto.tokenEscritura || Remoto.token;
+        const r = await fetch(Remoto.base() + '/ia', {method: 'POST', headers: h, body: JSON.stringify({prompt: input, imagenes: imgs}), signal: opts.signal});
+        if (!r.ok) { let m = ''; try { m = (await r.json()).error; } catch (e) {} throw {code: r.status === 429 ? 'rate_limited' : 'servidor', message: m}; }
+        const {text} = await r.json(); opts.onText && opts.onText({text, delta: text}); return {text}; };
+      return IA.fn; }
+    IA.modo = 'local'; IA.fn = null; return null;
+  })();
   if (!IA.ready) IA.ready = (async () => { const s = await claudeUse('sample'); IA.fn = s || null; if (s) { try { IA.limits = await s.limits(); } catch (e) { IA.limits = null; } } return IA.fn; })();
   return IA.ready;
 }
@@ -1301,8 +1319,57 @@ function normCampo(k, c) {
   const conf = v ? Math.max(0, Math.min(1, +c.conf || 0)) : 0;
   return {valor: v, conf, legible: !!v && conf >= 0.6};
 }
-async function iaExtraer({esperado, imagen, texto, onTipo, onCampo, signal}) {
-  const s = await iaInit(); if (!s) throw {code: 'no_disponible'};
+async function blobB64(b) { const buf = new Uint8Array(await b.arrayBuffer()); let s = ''; for (let i = 0; i < buf.length; i += 0x8000) s += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000)); return btoa(s); }
+/* ---------- OCR en el navegador (Tesseract.js) · respaldo gratuito en el dominio propio ---------- */
+const OCRL = {worker: null, cargando: null};
+function cargarScript(src) { return new Promise((ok, ko) => { const s = document.createElement('script'); s.src = src; s.onload = ok; s.onerror = () => ko(new Error('No se pudo cargar ' + src)); document.head.appendChild(s); }); }
+async function ocrWorker() {
+  if (OCRL.worker) return OCRL.worker;
+  if (!OCRL.cargando) OCRL.cargando = (async () => { if (!window.Tesseract) await cargarScript('https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js'); OCRL.worker = await Tesseract.createWorker('spa'); return OCRL.worker; })();
+  try { return await OCRL.cargando; } catch (e) { OCRL.cargando = null; throw e; }
+}
+function puntajeNombre(l) { const x = String(l || '').replace(/[^A-Za-zÁÉÍÓÚÑáéíóúñ ]/g, ' ').replace(/\s+/g, ' ').trim(); const pal = x.split(' ').filter(w => w.length >= 3); if (!pal.length || /APELLIDO|NOMBRE|FIRMA|NUMERO|REPUBLICA|COLOMBIA|IDENTIFICACION|CEDULA|CIUDADANIA|FECHA|LUGAR/.test(normTxt(x))) return [0, '']; const may = (x.match(/[A-ZÁÉÍÓÚÑ]/g) || []).length / Math.max(1, x.replace(/ /g, '').length); return [pal.reduce((a, w) => a + w.length, 0) * may, pal.join(' ')]; }
+function lineaVecina(lines, re) { // la cédula amarilla pone el valor arriba de la etiqueta (APELLIDOS, NOMBRES); otras versiones, al lado o debajo
+  const i = lines.findIndex(l => re.test(normTxt(l))); if (i < 0) return '';
+  const cands = [lines[i].replace(/^.*?(APELLIDOS?|NOMBRES?)\s*:?\s*/i, ''), lines[i - 1], lines[i + 1]].map(puntajeNombre).filter(c => c[0] >= 6).sort((a, b) => b[0] - a[0]);
+  return cands.length ? cands[0][1].toUpperCase() : '';
+}
+function parseCedulaOCR(t) {
+  const lines = String(t).split('\n').map(l => l.replace(/[|_~]+/g, ' ').replace(/\s+/g, ' ').trim()).filter(Boolean); const T = lines.join('\n');
+  const num = (T.match(/(?:N[UÚ]MERO|NUIP)\s*:?\s*([\d][\d\., ]{5,16}\d)/i) || T.match(/\b(\d{1,3}(?:[\.,]\d{3}){2,3})\b/) || T.match(/\b(\d{7,10})\b/) || [])[1] || '';
+  const reF = /(\d{1,2}[-\/ ][A-Za-z]{3}[-\/ ]\d{4}|\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{4})/g; const fechas = []; let m; while ((m = reF.exec(T))) fechas.push({f: m[1], i: m.index});
+  const tras = re => { const k = T.search(re); return k < 0 ? null : fechas.find(f => f.i > k) || null; };
+  const fn = tras(/A?CIMIENTO/i) || fechas[0] || null; const fe = tras(/EXPEDICI/i) || (fechas.length > 1 ? fechas[fechas.length - 1] : null);
+  const lugarExp = fe ? (T.slice(fe.i + fe.f.length).split('\n')[0] || '').replace(/[^A-Za-zÁÉÍÓÚÑáéíóúñ\.\(\) ]/g, '').trim() : '';
+  const lugarNac = (T.match(/LUGAR DE N?ACIMIENTO\s*\n?\s*([^\n]+)/i) || [])[1] || '';
+  // disposición: valor debajo de la etiqueta (APELLIDOS ↵ RESTREPO) o encima (RESTREPO ↵ APELLIDOS); se elige la que da dos nombres distintos
+  const pos = re => lines.findIndex(l => re.test(normTxt(l))); const ia = pos(/APELLIDO/), inn = pos(/NOMBRE/);
+  const val = (i, d) => { if (i < 0) return ''; const inl = puntajeNombre(lines[i].replace(/^.*?(APELLIDOS?|NOMBRES?)\s*:?\s*/i, '')); if (inl[0] >= 6) return inl[1].toUpperCase(); const c = puntajeNombre(lines[i + d]); return c[0] >= 6 ? c[1].toUpperCase() : ''; };
+  let ap = val(ia, 1), no = val(inn, 1); if (!ap || !no || ap === no) { const ap2 = val(ia, -1), no2 = val(inn, -1); if (ap2 && no2 && ap2 !== no2) { ap = ap2; no = no2; } else { ap = ap || ap2; no = no && no !== ap ? no : (no2 !== ap ? no2 : ''); } }
+  return {numero: campo(soloDig(num), 0.72), apellidos: campo(ap, 0.65), nombres: campo(no, 0.65), fechaNacimiento: campo(fn ? parseFechaES(fn.f) : '', 0.65),
+    lugarNacimiento: campo(lugarNac.split(' ').filter((w, i, a) => !(/\d/.test(w) || (w.length <= 2 && i < a.length - 1 && !/^\(/.test(w)))).join(' ').trim(), 0.55), fechaExpedicion: campo(fe && fe !== fn ? parseFechaES(fe.f) : '', 0.6), lugarExpedicion: campo(lugarExp.length >= 4 ? lugarExp : '', 0.55)};
+}
+async function prepararOCR(blob) { // escala a ~1800 px, gris y contraste: reduce el efecto de hologramas y fondos de seguridad
+  const url = URL.createObjectURL(blob); try { const img = await new Promise((ok, ko) => { const i = new Image(); i.onload = () => ok(i); i.onerror = ko; i.src = url; });
+    const k = Math.min(2.2, 1800 / Math.max(img.width, img.height)); const c = document.createElement('canvas'); c.width = Math.round(img.width * k); c.height = Math.round(img.height * k); const x = c.getContext('2d'); x.drawImage(img, 0, 0, c.width, c.height);
+    const d = x.getImageData(0, 0, c.width, c.height); const p = d.data; let mn = 255, mx = 0; const g = new Uint8ClampedArray(p.length / 4);
+    for (let i = 0, j = 0; i < p.length; i += 4, j++) { const v = 0.3 * p[i] + 0.59 * p[i + 1] + 0.11 * p[i + 2]; g[j] = v; if (v < mn) mn = v; if (v > mx) mx = v; }
+    const r = Math.max(1, mx - mn); for (let i = 0, j = 0; i < p.length; i += 4, j++) { let v = (g[j] - mn) * 255 / r; v = v < 150 ? v * 0.6 : Math.min(255, v * 1.25); p[i] = p[i + 1] = p[i + 2] = v; }
+    x.putImageData(d, 0, 0); return c; } finally { URL.revokeObjectURL(url); }
+}
+async function ocrLocalExtraer({esperado, imagen, nombre, onTipo, onCampo, signal}) {
+  if (!imagen) throw {code: 'no_disponible'};
+  const w = await ocrWorker(); if (signal && signal.aborted) throw {code: 'cancelado'};
+  const {data} = await w.recognize(await prepararOCR(imagen).catch(() => imagen)); const texto = data.text || ''; if (signal && signal.aborted) throw {code: 'cancelado'};
+  let {tipo, conf} = clasificar(texto, esperado, nombre); if (tipo === 'OTRO' && esperado && esperado !== 'AUTO') { tipo = esperado; conf = 0.5; }
+  if (tipo === 'OTRO' && tipoPorNombre(nombre)) { tipo = tipoPorNombre(nombre); conf = 0.5; }
+  onTipo && onTipo(tipo, conf);
+  let campos = tipo === 'CEDULA' ? parseCedulaOCR(texto) : (({RUT: parseRUT, CAMARA: parseCamara, BANCARIA: parseBancaria, ACCIONARIA: parseAccionaria})[tipo]?.(texto) || {});
+  for (const [k, c] of Object.entries(campos)) { c.conf = Math.min(c.conf || 0, 0.78); if (c.valor) { onCampo && onCampo(k, c, {tipo}); await sleep(60); } }
+  return {tipo, conf, campos, local: true, texto, confOCR: (data.confidence || 0) / 100};
+}
+async function iaExtraer({esperado, imagen, texto, onTipo, onCampo, signal, nombre}) {
+  const s = await iaInit(); if (!s && IA.modo === 'local') return ocrLocalExtraer({esperado, imagen, nombre, onTipo, onCampo, signal}); if (!s) throw {code: 'no_disponible'};
   if (imagen && !(IA.limits && IA.limits.images)) throw {code: 'images_unavailable'};
   const nota = imagen ? 'La imagen adjunta es un documento cargado por un tercero en un formulario de vinculación.' : 'A continuación está el texto extraído de un PDF cargado por un tercero, entre las marcas <documento>.';
   const input = promptIA(esperado, nota) + (texto ? `\n\n<documento>\n${texto.slice(0, 14000)}\n</documento>` : '');
@@ -1319,7 +1386,7 @@ async function iaExtraer({esperado, imagen, texto, onTipo, onCampo, signal}) {
   return out;
 }
 function iaMotivo(e) {
-  const M = {no_disponible: 'esta vista no tiene acceso a Claude (abre el prototipo en claude.ai)', not_granted: 'no se autorizó el uso de Claude en esta página', images_unavailable: 'esta vista no puede enviar imágenes a Claude', rate_limited: 'se alcanzó el límite de uso; intenta más tarde', image_rejected: 'la imagen no es válida o supera el tamaño permitido', refused: 'el modelo no procesó este documento', session_expired: 'la sesión expiró; vuelve a iniciar sesión', sampling_disabled: 'Claude no está habilitado para esta cuenta', invalid_json: 'la respuesta no tuvo el formato esperado'};
+  const M = {demo: 'documento de ejemplo del escenario', no_disponible: 'lectura automática no disponible en esta vista', servidor: 'el servicio de lectura no respondió', not_granted: 'no se autorizó el uso de Claude en esta página', images_unavailable: 'esta vista no puede enviar imágenes a Claude', rate_limited: 'se alcanzó el límite de uso; intenta más tarde', image_rejected: 'la imagen no es válida o supera el tamaño permitido', refused: 'el modelo no procesó este documento', session_expired: 'la sesión expiró; vuelve a iniciar sesión', sampling_disabled: 'Claude no está habilitado para esta cuenta', invalid_json: 'la respuesta no tuvo el formato esperado'};
   return M[e && e.code] || `error de lectura (${(e && e.code) || 'desconocido'})`;
 }
 function slotPara(req, tipo) { const pj = req.tipoPersona === 'juridica'; return ({CEDULA: pj ? 'ccrep' : 'cc', RUT: 'rut', BANCARIA: 'banco', CAMARA: pj ? 'ccio' : null, ACCIONARIA: pj ? 'accion' : null})[tipo] || null; }
@@ -1347,7 +1414,7 @@ async function procesarDocumento(file, slotDef, req, onStep, onCampo, popts = {}
   }
   await step('clasificar');
   const esperado = slotDef.tipo; const fx = file.sampleKey && OCR_FIXTURES[file.sampleKey];
-  let tipo = null, confClasif = 0.5, campos = {}, motor = '', simulado = false, iaError = null, usoIA = false, sinLectura = false;
+  let tipo = null, confClasif = 0.5, campos = {}, motor = '', simulado = false, iaError = null, usoIA = false, sinLectura = false, ocrLocal = false, textoOCR = '';
   const tipoSinLectura = () => esperado !== 'AUTO' ? esperado : (tipoPorNombre(file.name) || (req.tipoPersona === 'juridica' ? null : 'CEDULA')) || 'OTRO';
   const emitir = (k, c, t) => onCampo && onCampo(k, c, {tipo: t, id});
   if (metodo === 'pdf_texto') {
@@ -1362,16 +1429,18 @@ async function procesarDocumento(file, slotDef, req, onStep, onCampo, popts = {}
         Object.entries(r.campos).forEach(([k, c]) => { if (!campos[k] || !campos[k].valor) campos[k] = c; });
         motor = 'Lectura real · capa de texto del PDF + IA documental (Claude)'; usoIA = true;
       } catch (e) { if (cancelado()) throw {code: 'cancelado'}; iaError = e;
-        if (tipo === 'OTRO' && String(texto || '').replace(/\s/g, '').length > 150) { motor = 'Se leyó el texto del PDF y no corresponde a ninguno de los documentos solicitados.'; } // contenido legible y ajeno: se rechaza (R1)
+        if (tipo === 'OTRO' && String(texto || '').replace(/\s/g, '').length > 150 && !(esperado !== 'AUTO' && tipoPorNombre(file.name) === esperado)) { motor = 'Se leyó el texto del PDF y no corresponde a ninguno de los documentos solicitados.'; } // contenido legible y ajeno: se rechaza (R1)
         else if (tipo === 'OTRO') { tipo = tipoSinLectura(); confClasif = 0.5; campos = {}; (CAMPOS_TIPO[tipo] || []).forEach(k => campos[k] = {valor: '', conf: 0, legible: false}); sinLectura = true; motor = 'Lectura automática no disponible: ' + iaMotivo(e) + '. Pendiente de verificación manual.'; }
       }
     } else { await step('extraer'); for (const [k, c] of Object.entries(campos)) { if (cancelado()) throw {code: 'cancelado'}; emitir(k, c, tipo); await sleep(70); } }
   } else {
     await step('extraer', {ia: true});
     try {
-      const r = await iaExtraer({esperado, imagen: imgBlob, signal, onTipo: (t, c) => { tipo = t; onStep && onStep('extraer', {ia: true, tipo: t}); }, onCampo: (k, c, o) => emitir(k, c, o.tipo)});
-      tipo = r.tipo; confClasif = r.conf; campos = r.campos; usoIA = true;
-      motor = metodo === 'pdf_escaneado' ? 'IA documental real · Claude visión sobre PDF escaneado' : 'IA documental real · Claude visión (OCR, clasificación y extracción)';
+      await iaInit(); if (fx && IA.modo === 'local') throw {code: 'demo'}; // documentos de ejemplo: datos fijos del escenario
+      const r = await iaExtraer({esperado, imagen: imgBlob, signal, nombre: file.name, onTipo: (t, c) => { tipo = t; onStep && onStep('extraer', {ia: true, tipo: t}); }, onCampo: (k, c, o) => emitir(k, c, o.tipo)});
+      tipo = r.tipo; confClasif = r.conf; campos = r.campos;
+      if (r.local) { ocrLocal = true; textoOCR = r.texto || ''; motor = 'OCR real en el navegador (Tesseract) · confianza ' + Math.round((r.confOCR || 0) * 100) + ' %'; if (!Object.values(campos).some(c => c && c.valor)) { sinLectura = true; motor += ' · no se reconocieron datos: verificación manual'; } }
+      else { usoIA = true; motor = (IA.modo === 'servidor' ? 'IA documental real · Claude (servidor STRADATA)' : 'IA documental real · Claude visión') + (metodo === 'pdf_escaneado' ? ' sobre PDF escaneado' : ' (OCR, clasificación y extracción)'); }
     } catch (e) {
       if (cancelado()) throw {code: 'cancelado'};
       iaError = e;
@@ -1386,7 +1455,7 @@ async function procesarDocumento(file, slotDef, req, onStep, onCampo, popts = {}
   const docRec = {
     id, slot, nombre: file.name || 'documento', mime: file.type || (isPdf ? 'application/pdf' : 'image/*'), tamano: file.size || buf.byteLength, sha256: hash, cargadoAt: nowISO(),
     tipoEsperado: def.tipo === 'AUTO' ? tipo : def.tipo, tipoDetectado: tipo, confClasif, coincideTipo: tipo === def.tipo || def.tipo === 'OTRO' || def.tipo === 'AUTO', metodo, paginas,
-    motor, simulado, sinLectura, ia: usoIA, iaError: iaError ? iaMotivo(iaError) : null, campos, textoExtraido: metodo === 'pdf_texto' ? texto.slice(0, 4000) : '', demo: !!file.sampleKey, origenCarga: slotDef.slot === 'auto' ? 'formulario' : 'documentos',
+    motor, simulado, sinLectura, ocrLocal, ids: idsEnTexto(metodo === 'pdf_texto' ? texto : textoOCR), ia: usoIA, iaError: iaError ? iaMotivo(iaError) : null, campos, textoExtraido: metodo === 'pdf_texto' ? texto.slice(0, 4000) : '', demo: !!file.sampleKey, origenCarga: slotDef.slot === 'auto' ? 'formulario' : 'documentos',
   };
   await Store.putFile(req.id + '__' + docRec.id, {preview, original, nombre: docRec.nombre, mime: docRec.mime});
   return docRec;
@@ -1406,7 +1475,7 @@ function verificarDocumento(req, doc, slotDef, parcial) {
     if (t === 'OTRO') return R('R1', pj ? 'No reconocemos este archivo como RUT, certificado de Cámara de Comercio, certificación bancaria, cédula ni certificado accionario.' : 'No reconocemos este archivo como cédula, certificación bancaria ni RUT.');
     if (!slotPara(req, t)) return R('R1', `${TIPO_DOC_TXT[t]} no corresponde a una vinculación de persona ${pj ? 'jurídica' : 'natural'}.`);
   } else { const esp = TIPOS_SLOT[slotDef.slot]; if (esp && t !== esp) return R('R1', t === 'OTRO' ? `El archivo no parece ser ${ART_DOC(esp)}. Sube ${ART_DOC(esp)} legible.` : `Subiste ${ART_DOC(t)} en el espacio de ${ART_DOC(esp)}.`); }
-  const c = doc.campos || {}; const v = k => soloDig(c[k] && c[k].valor); const leido = doc.ia || doc.demo; // un parser sin coincidencias no es un documento ilegible: queda para verificación manual
+  const c = doc.campos || {}; const v = k => soloDig(c[k] && c[k].valor); const leido = (doc.ia && !doc.ocrLocal) || doc.demo; // un parser sin coincidencias no es un documento ilegible: queda para verificación manual
   if (!parcial && leido) { const clave = t === 'CEDULA' ? 'numero' : ['RUT', 'CAMARA', 'ACCIONARIA'].includes(t) ? 'nit' : t === 'BANCARIA' ? 'numeroCuenta' : null; if (clave && !v(clave)) return R('R2', `No pudimos leer ${t === 'CEDULA' ? 'el número de identificación' : t === 'BANCARIA' ? 'el número de cuenta' : 'el NIT'} del documento. Sube una imagen más nítida o el PDF original.`); }
   const otros = (req.documentos || []).filter(d => d.slot !== doc.slot && d.id !== doc.id && d.campos); const ov = (d, k) => soloDig(d.campos[k] && d.campos[k].valor); const T = req.tercero || {};
   // R4 · vigencia: el RUT de persona jurídica debe estar actualizado (≤ 30 días)
@@ -1414,7 +1483,7 @@ function verificarDocumento(req, doc, slotDef, parcial) {
   // R3 · certificación bancaria a nombre de otra persona o empresa
   if (t === 'BANCARIA' && !parcial) { const tid = v('titularId'); if (tid) {
     const ref = pj ? (otros.filter(o => ['RUT', 'CAMARA', 'ACCIONARIA'].includes(o.tipoDetectado)).map(o => ov(o, 'nit')).find(Boolean) || soloDig(req.formulario?.nit)) : ((otros.find(o => o.tipoDetectado === 'CEDULA') && ov(otros.find(o => o.tipoDetectado === 'CEDULA'), 'numero')) || soloDig(req.formulario?.numId));
-    if (ref && !mismoId(tid, ref)) return R('R3', `La certificación bancaria está a nombre de ${titulo(c.titular && c.titular.valor || 'otro titular')} (${fmtIdCO(tid)}), no ${pj ? 'de la sociedad' : 'del titular'} de esta vinculación (${fmtIdCO(ref)}).`);
+    if (ref && !mismoId(tid, ref) && !(doc.ids || []).some(x => mismoId(x, ref))) return R('R3', `La certificación bancaria está a nombre de ${titulo(c.titular && c.titular.valor || 'otro titular')} (${fmtIdCO(tid)}), no ${pj ? 'de la sociedad' : 'del titular'} de esta vinculación (${fmtIdCO(ref)}).`);
   } }
   if (t === 'RUT' || t === 'CAMARA' || t === 'ACCIONARIA') { const nit = v('nit'); if (nit) {
     for (const o of otros.filter(o => ['RUT', 'CAMARA', 'ACCIONARIA'].includes(o.tipoDetectado))) { const n = ov(o, 'nit'); if (n && n !== nit) return R('R3', `El NIT de este documento (${fmtIdCO(nit)}) no coincide con el del ${TIPO_DOC_TXT[o.tipoDetectado]} ya cargado (${fmtIdCO(n)}).`); }
@@ -1432,6 +1501,7 @@ function verificarDocumento(req, doc, slotDef, parcial) {
   } }
   return {ok: true};
 }
+function idsEnTexto(t) { const out = new Set(); String(t || '').replace(/\b(\d)[ \t](?=\d\b)/g, '$1').replace(/(\d)[\.,](?=\d{3}\b)/g, '$1').replace(/\d{6,12}/g, m => { out.add(m); return m; }); return [...out].slice(0, 60); }
 const mismoId = (a, b) => { a = soloDig(a); b = soloDig(b); return !!a && !!b && (a === b || a.slice(0, -1) === b || b.slice(0, -1) === a); }; // tolera el dígito de verificación pegado al NIT
 const titulo = s => String(s || '').toLowerCase().replace(/(^|\s)\S/g, m => m.toUpperCase()).replace(/\bS\.a\.s\b\.?/gi, 'S.A.S.').replace(/\bS\.a\b\.?/g, 'S.A.').replace(/\bLtda\b/g, 'Ltda.').replace(/\.\./g, '.').replace(/ (De|Del|La|Las|Los|Y) /g, m => m.toLowerCase());
 const TIPO_SOC_MAP = s => { const n = normTxt(s); if (n.includes('ACCIONES SIMPLIFICADA')) return TIPOS_SOC[0]; if (n.includes('ANONIMA')) return TIPOS_SOC[1]; if (n.includes('LIMITADA')) return TIPOS_SOC[2]; return s ? 'Otra' : ''; };
@@ -2397,12 +2467,12 @@ function slotHTML(req, s) {
   else if (d) {
     const campos = Object.entries(d.campos || {}); inner = rechazoHTML(pr); const leidos = campos.filter(([, c]) => c.valor).length; const bajos = campos.filter(([, c]) => c.valor && c.conf < 0.7);
     inner += `<div class="row" style="align-items:flex-start;flex-wrap:nowrap"><img data-file="${esc(req.id + '__' + d.id)}" alt="Documento cargado" style="width:84px;border-radius:6px;border:1px solid var(--line);flex:none;background:#fff">
-      <div class="stack-sm" style="min-width:0;flex:1;gap:4px"><div class="row"><b class="small">${esc(TIPO_DOC_TXT[d.tipoDetectado])}</b>${d.sinLectura ? '<span class="tag t-sim">VERIFICACIÓN MANUAL</span>' : d.simulado ? '<span class="tag t-sim">OCR SIMULADO</span>' : d.ia ? '<span class="tag t-real">IA DOCUMENTAL</span>' : '<span class="tag t-real">LECTURA REAL</span>'}</div>
+      <div class="stack-sm" style="min-width:0;flex:1;gap:4px"><div class="row"><b class="small">${esc(TIPO_DOC_TXT[d.tipoDetectado])}</b>${d.sinLectura ? '<span class="tag t-sim">VERIFICACIÓN MANUAL</span>' : d.ocrLocal ? '<span class="tag t-real">OCR</span>' : d.simulado ? '<span class="tag t-sim">OCR SIMULADO</span>' : d.ia ? '<span class="tag t-real">IA DOCUMENTAL</span>' : '<span class="tag t-real">LECTURA REAL</span>'}</div>
       <span class="tiny muted">${esc(d.nombre)} · ${bytesTxt(d.tamano)}</span>
       ${d.sinLectura ? `<span class="note note-warn small">No pudimos leer este archivo automáticamente. Quedó guardado: completa tus datos en el formulario y un analista lo verificará.</span>` : ''}
       ${!d.coincideTipo ? `<span class="pill p-warn">Parece ${esc(TIPO_DOC_TXT[d.tipoDetectado])}, se esperaba ${esc(TIPO_DOC_TXT[d.tipoEsperado])}</span>` : ''}
-      <span class="small">${campos.length ? `${leidos} de ${campos.length} datos leídos` : 'Documento de soporte guardado'}${bajos.length ? ` · <span style="color:var(--warn)">${bajos.length} con baja confianza</span>` : ''}${campos.length && !leidos ? ' · <span style="color:var(--warn)">ingresa los datos manualmente</span>' : ''}</span>${d.iaError && !leidos ? `<span class="tiny muted">Lectura automática no disponible: ${esc(d.iaError)}.</span>` : ''}</div></div>
-      ${campos.length ? `<details><summary class="small" style="cursor:pointer;color:var(--accent)">Ver datos extraídos</summary><div class="stack-sm" style="margin-top:8px">${campos.map(([k, c]) => `<div class="row-between small"><span class="muted">${esc(ETQ[k] || k)}</span><span style="text-align:right">${c.valor ? esc(/^\d{4}-\d{2}-\d{2}$/.test(c.valor) ? fmtF(c.valor) : c.valor) + ' ' + confBar(c.conf) : '<span class="pill p-crit">Ilegible</span>'}</span></div>`).join('')}</div></details>` : ''}
+      ${d.sinLectura ? '' : `<span class="small">${campos.length ? `${leidos} de ${campos.length} datos leídos` : 'Documento de soporte guardado'}${bajos.length ? ` · <span style="color:var(--warn)">${bajos.length} con baja confianza</span>` : ''}${campos.length && !leidos ? ' · <span style="color:var(--warn)">ingresa los datos manualmente</span>' : ''}</span>`}${d.ocrLocal && leidos ? '<span class="tiny muted">Leído con OCR: revisa los datos marcados con baja confianza.</span>' : ''}</div></div>
+      ${campos.length && !d.sinLectura ? `<details><summary class="small" style="cursor:pointer;color:var(--accent)">Ver datos extraídos</summary><div class="stack-sm" style="margin-top:8px">${campos.map(([k, c]) => `<div class="row-between small"><span class="muted">${esc(ETQ[k] || k)}</span><span style="text-align:right">${c.valor ? esc(/^\d{4}-\d{2}-\d{2}$/.test(c.valor) ? fmtF(c.valor) : c.valor) + ' ' + confBar(c.conf) : '<span class="pill p-crit">Ilegible</span>'}</span></div>`).join('')}</div></details>` : ''}
       <div class="row"><label class="btn btn-sm">${ICON.up} Reemplazar<input type="file" hidden accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/png,image/jpeg" data-upload="${s.slot}"></label></div>`;
   } else {
     inner = `${rechazoHTML(pr)}${pr && pr.error ? `<div class="note note-crit small">${esc(pr.error)}</div>` : ''}<div class="row"><label class="btn btn-primary">${ICON.up} Cargar archivo<input type="file" hidden accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/png,image/jpeg" data-upload="${s.slot}"></label>${req.demo && ['cc', 'ccrep', 'rut', 'ccio', 'banco', 'accion'].includes(s.slot) ? `<button class="btn" data-a="p-muestra" data-slot="${s.slot}">Usar documento de ejemplo</button>` : ''}</div>`;

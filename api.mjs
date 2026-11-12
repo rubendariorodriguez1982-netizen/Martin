@@ -11,7 +11,8 @@
      PUT    /api/t/:token/sol                    → guarda la solicitud del token (no puede cambiar id ni token)
      GET|PUT /api/arch/:key     (panel)          → archivo (vista previa / original)
      GET|PUT /api/t/:token/arch/:key             → archivo de la solicitud del token (key = <id>__<doc>)
-     GET    /api/f/:token                        → solicitud que contiene la firma adicional con ese token */
+     GET    /api/f/:token                        → solicitud que contiene la firma adicional con ese token
+     POST   /api/ia   (panel o x-token válido)   → lectura de documentos con Claude (requiere ANTHROPIC_API_KEY) */
 import { getStore } from '@netlify/blobs';
 
 const MAX = 5_500_000;
@@ -20,7 +21,7 @@ const err = (s, m) => json({ error: m }, s);
 const idOk = s => typeof s === 'string' && /^[A-Za-z0-9_\-]{3,80}$/.test(s);
 const tokOk = s => typeof s === 'string' && /^[A-Za-z0-9]{16,64}$/.test(s);
 
-export function crearApi(store, clave) {
+export function crearApi(store, clave, ia = {}) {
   const panel = req => !!clave && req.headers.get('x-clave') === clave;
   const leerSol = id => store.get('sol/' + id, { type: 'json' });
   async function indexar(sol) { // token → id (activo, revocados y firmas adicionales)
@@ -36,7 +37,19 @@ export function crearApi(store, clave) {
   return async function handler(req) {
     const url = new URL(req.url); const p = url.pathname.replace(/^\/(?:\.netlify\/functions\/api|api)\/?/, '').split('/').filter(Boolean).map(decodeURIComponent); const m = req.method;
     try {
-      if (p[0] === 'estado') return json({ ok: true, panelConfigurado: !!clave, panel: panel(req) });
+      if (p[0] === 'estado') return json({ ok: true, panelConfigurado: !!clave, panel: panel(req), ia: !!ia.key });
+      if (p[0] === 'ia' && m === 'POST') {
+        if (!ia.key) return err(501, 'Lectura con IA no configurada (ANTHROPIC_API_KEY).');
+        const tk = req.headers.get('x-token'); const okTok = tk && tokOk(tk) && await store.get('tok/' + tk, { type: 'json' });
+        if (!panel(req) && !okTok) return err(401, 'No autorizado.');
+        const b = await body(req); if (!b || typeof b.prompt !== 'string' || b.prompt.length > 30000) return err(400, 'Solicitud inválida');
+        const imgs = (Array.isArray(b.imagenes) ? b.imagenes : []).slice(0, 3).filter(x => x && /^image\/(jpeg|png|webp)$/.test(x.tipo) && typeof x.datos === 'string');
+        const content = [...imgs.map(x => ({ type: 'image', source: { type: 'base64', media_type: x.tipo, data: x.datos } })), { type: 'text', text: b.prompt }];
+        const r = await (ia.fetch || fetch)('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': ia.key, 'anthropic-version': '2023-06-01' },
+          body: JSON.stringify({ model: ia.modelo || 'claude-haiku-5-5', max_tokens: 2000, messages: [{ role: 'user', content }] }) });
+        if (!r.ok) return err(r.status === 429 ? 429 : 502, 'El servicio de IA no respondió (' + r.status + ').');
+        const j = await r.json(); return json({ text: (j.content || []).filter(c => c.type === 'text').map(c => c.text).join('') });
+      }
       if (p[0] === 'sol') {
         if (!clave) return err(503, 'Falta configurar la variable de entorno CLAVE_ANALISTA en Netlify.');
         if (!panel(req)) return err(401, 'Clave del analista requerida.');
@@ -76,5 +89,5 @@ export function crearApi(store, clave) {
   };
 }
 
-export default async (req) => crearApi(getStore({ name: 'kyc-onboarding', consistency: 'strong' }), process.env.CLAVE_ANALISTA || '')(req);
+export default async (req) => crearApi(getStore({ name: 'kyc-onboarding', consistency: 'strong' }), process.env.CLAVE_ANALISTA || '', { key: process.env.ANTHROPIC_API_KEY || '', modelo: process.env.MODELO_IA || '' })(req);
 export const config = { path: '/api/*' };
