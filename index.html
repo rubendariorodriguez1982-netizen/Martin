@@ -1381,8 +1381,8 @@ async function iaExtraer({esperado, imagen, texto, onTipo, onCampo, signal, nomb
   };
   const opts = {modelTier: 'quick', signal, onText: ({delta}) => { const ls = (pend + delta).split('\n'); pend = ls.pop(); ls.forEach(eat); }};
   if (imagen) opts.images = imagen;
-  await s(input, opts); if (pend) eat(pend);
-  if (!out.tipo) throw {code: 'invalid_json'};
+  try { await s(input, opts); if (pend) eat(pend); if (!out.tipo) throw {code: 'invalid_json'}; }
+  catch (e) { if (IA.modo === 'servidor' && imagen && !(signal && signal.aborted)) return ocrLocalExtraer({esperado, imagen, nombre, onTipo, onCampo, signal}); throw e; } // si el servicio de IA falla, OCR en el navegador
   return out;
 }
 function iaMotivo(e) {

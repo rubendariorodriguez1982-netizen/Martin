@@ -45,10 +45,17 @@ export function crearApi(store, clave, ia = {}) {
         const b = await body(req); if (!b || typeof b.prompt !== 'string' || b.prompt.length > 30000) return err(400, 'Solicitud inválida');
         const imgs = (Array.isArray(b.imagenes) ? b.imagenes : []).slice(0, 3).filter(x => x && /^image\/(jpeg|png|webp)$/.test(x.tipo) && typeof x.datos === 'string');
         const content = [...imgs.map(x => ({ type: 'image', source: { type: 'base64', media_type: x.tipo, data: x.datos } })), { type: 'text', text: b.prompt }];
-        const r = await (ia.fetch || fetch)('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': ia.key, 'anthropic-version': '2023-06-01' },
-          body: JSON.stringify({ model: ia.modelo || 'claude-haiku-5-5', max_tokens: 2000, messages: [{ role: 'user', content }] }) });
-        if (!r.ok) return err(r.status === 429 ? 429 : 502, 'El servicio de IA no respondió (' + r.status + ').');
-        const j = await r.json(); return json({ text: (j.content || []).filter(c => c.type === 'text').map(c => c.text).join('') });
+        // Netlify AI Gateway inyecta ANTHROPIC_API_KEY y ANTHROPIC_BASE_URL; si no hay base, se usa la API de Anthropic directa
+        const base = (ia.base || 'https://api.anthropic.com').replace(/\/+$/, '');
+        const modelos = [...new Set([ia.modelo, 'claude-haiku-5-5', 'claude-sonnet-5-5', 'claude-haiku-4-5', 'claude-sonnet-4-5-20250929'].filter(Boolean))];
+        let ultimo = 0;
+        for (const model of modelos) {
+          const r = await (ia.fetch || fetch)(base + '/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': ia.key, 'anthropic-version': '2023-06-01' },
+            body: JSON.stringify({ model, max_tokens: 2000, messages: [{ role: 'user', content }] }) });
+          if (r.ok) { const j = await r.json(); return json({ text: (j.content || []).filter(c => c.type === 'text').map(c => c.text).join(''), modelo: model }); }
+          ultimo = r.status; if (![400, 404].includes(r.status)) break; // modelo no disponible: se intenta el siguiente
+        }
+        return err(ultimo === 429 ? 429 : 502, 'El servicio de IA no respondió (' + ultimo + ').');
       }
       if (p[0] === 'sol') {
         if (!clave) return err(503, 'Falta configurar la variable de entorno CLAVE_ANALISTA en Netlify.');
@@ -89,5 +96,5 @@ export function crearApi(store, clave, ia = {}) {
   };
 }
 
-export default async (req) => crearApi(getStore({ name: 'kyc-onboarding', consistency: 'strong' }), process.env.CLAVE_ANALISTA || '', { key: process.env.ANTHROPIC_API_KEY || '', modelo: process.env.MODELO_IA || '' })(req);
+export default async (req) => crearApi(getStore({ name: 'kyc-onboarding', consistency: 'strong' }), process.env.CLAVE_ANALISTA || '', { key: process.env.ANTHROPIC_API_KEY || '', base: process.env.ANTHROPIC_BASE_URL || '', modelo: process.env.MODELO_IA || '' })(req);
 export const config = { path: '/api/*' };
