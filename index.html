@@ -1435,6 +1435,7 @@ const mismoId = (a, b) => { a = soloDig(a); b = soloDig(b); return !!a && !!b &&
 const titulo = s => String(s || '').toLowerCase().replace(/(^|\s)\S/g, m => m.toUpperCase()).replace(/\bS\.a\.s\b\.?/gi, 'S.A.S.').replace(/\bS\.a\b\.?/g, 'S.A.').replace(/\bLtda\b/g, 'Ltda.').replace(/\.\./g, '.').replace(/ (De|Del|La|Las|Los|Y) /g, m => m.toLowerCase());
 const TIPO_SOC_MAP = s => { const n = normTxt(s); if (n.includes('ACCIONES SIMPLIFICADA')) return TIPOS_SOC[0]; if (n.includes('ANONIMA')) return TIPOS_SOC[1]; if (n.includes('LIMITADA')) return TIPOS_SOC[2]; return s ? 'Otra' : ''; };
 function aplicarOCR(req, d) {
+  if (d.sinLectura) return []; // no se leyó nada: no se marca ningún campo como extraído
   const f = req.formulario, src = req.fuentes, pj = req.tipoPersona === 'juridica'; const c = d.campos || {}; const aplicados = [];
   const prio = {CAMARA: 3, RUT: 2, CEDULA: 1};
   const put = (k, v, conf, prioridad) => {
@@ -2395,9 +2396,9 @@ function slotHTML(req, s) {
   else if (d) {
     const campos = Object.entries(d.campos || {}); inner = rechazoHTML(pr); const leidos = campos.filter(([, c]) => c.valor).length; const bajos = campos.filter(([, c]) => c.valor && c.conf < 0.7);
     inner += `<div class="row" style="align-items:flex-start;flex-wrap:nowrap"><img data-file="${esc(req.id + '__' + d.id)}" alt="Documento cargado" style="width:84px;border-radius:6px;border:1px solid var(--line);flex:none;background:#fff">
-      <div class="stack-sm" style="min-width:0;flex:1;gap:4px"><div class="row"><b class="small">${esc(TIPO_DOC_TXT[d.tipoDetectado])}</b>${d.simulado ? '<span class="tag t-sim">OCR SIMULADO</span>' : d.ia ? '<span class="tag t-real">IA DOCUMENTAL</span>' : '<span class="tag t-real">LECTURA REAL</span>'}</div>
+      <div class="stack-sm" style="min-width:0;flex:1;gap:4px"><div class="row"><b class="small">${esc(TIPO_DOC_TXT[d.tipoDetectado])}</b>${d.sinLectura ? '<span class="tag t-sim">VERIFICACIÓN MANUAL</span>' : d.simulado ? '<span class="tag t-sim">OCR SIMULADO</span>' : d.ia ? '<span class="tag t-real">IA DOCUMENTAL</span>' : '<span class="tag t-real">LECTURA REAL</span>'}</div>
       <span class="tiny muted">${esc(d.nombre)} · ${bytesTxt(d.tamano)}</span>
-      ${d.sinLectura ? `<span class="note note-warn small">No pudimos leer este archivo automáticamente${d.iaError ? ` (${esc(d.iaError)})` : ''}. Quedó guardado: completa tus datos en el formulario y un analista lo verificará.</span>` : ''}
+      ${d.sinLectura ? `<span class="note note-warn small">No pudimos leer este archivo automáticamente. Quedó guardado: completa tus datos en el formulario y un analista lo verificará.</span>` : ''}
       ${!d.coincideTipo ? `<span class="pill p-warn">Parece ${esc(TIPO_DOC_TXT[d.tipoDetectado])}, se esperaba ${esc(TIPO_DOC_TXT[d.tipoEsperado])}</span>` : ''}
       <span class="small">${campos.length ? `${leidos} de ${campos.length} datos leídos` : 'Documento de soporte guardado'}${bajos.length ? ` · <span style="color:var(--warn)">${bajos.length} con baja confianza</span>` : ''}${campos.length && !leidos ? ' · <span style="color:var(--warn)">ingresa los datos manualmente</span>' : ''}</span>${d.iaError && !leidos ? `<span class="tiny muted">Lectura automática no disponible: ${esc(d.iaError)}.</span>` : ''}</div></div>
       ${campos.length ? `<details><summary class="small" style="cursor:pointer;color:var(--accent)">Ver datos extraídos</summary><div class="stack-sm" style="margin-top:8px">${campos.map(([k, c]) => `<div class="row-between small"><span class="muted">${esc(ETQ[k] || k)}</span><span style="text-align:right">${c.valor ? esc(/^\d{4}-\d{2}-\d{2}$/.test(c.valor) ? fmtF(c.valor) : c.valor) + ' ' + confBar(c.conf) : '<span class="pill p-crit">Ilegible</span>'}</span></div>`).join('')}</div></details>` : ''}
@@ -2423,7 +2424,7 @@ function pasoDatos(req) {
   const campos = esquema(req).filter(x => x.sec === 'datos'); const ocr = campos.filter(x => req.fuentes[x.k]?.origen === 'ocr').length;
   return `${bannerCorreccion(req)}<div class="p-card"><div class="p-title">${req.tipoPersona === 'juridica' ? 'Datos de la empresa y su representante' : 'Revisa tus datos personales'}</div>
    <p class="p-lead">${ocr ? `Completamos ${ocr} campos a partir de tus documentos (<span class="tag t-ocr">OCR</span>). Revísalos y corrige lo que sea necesario.` : 'Diligencia la información solicitada.'}</p>
-   ${scanHTML(req)}
+   ${scanBloque(req)}
    ${req.demo ? `<button class="btn btn-sm" data-a="p-demo" data-sec="datos" style="align-self:flex-start">Completar campos vacíos con datos de ejemplo</button>` : ''}
    <div class="grid2">${campos.map(x => campoHTML(req, x)).join('')}</div><div id="p-err"></div>${pNav(req, 'documentos')}</div>`;
 }
@@ -2543,6 +2544,14 @@ function pintarCampos(req, keys) {
     const s = req.fuentes[k]; if (s && (s.conf || 0) < 0.7) el.classList.add('lowconf'); else el.classList.remove('lowconf');
     const line = el.parentElement && el.parentElement.querySelector('.srcline'); if (line) line.innerHTML = srcTag(s);
   });
+}
+function scanBloque(req) { // si ya cargó sus documentos no se le vuelve a pedir la cédula: el escáner queda opcional y plegado
+  const docs = (req.documentos || []).filter(d => d.slot && d.slot !== 'auto');
+  if (!docs.length) return scanHTML(req);
+  const abierto = P.proc.auto || (P.ultimoAuto && P.ultimoAuto.req === req.id);
+  const pend = docs.filter(d => d.sinLectura);
+  return `<div class="note note-ok small">Usamos los documentos que ya cargaste: ${docs.map(d => `<b>${esc(TIPO_DOC_TXT[d.tipoDetectado] || d.nombre)}</b>`).join(', ')}. No tienes que volver a subirlos.${pend.length ? ` ${pend.length === 1 ? 'Uno no se pudo' : 'Algunos no se pudieron'} leer automáticamente (${pend.map(d => esc(TIPO_DOC_TXT[d.tipoDetectado] || d.nombre)).join(', ')}): escribe esos datos abajo y un analista los verificará.` : ''}</div>
+   <details class="scan-more"${abierto ? ' open' : ''}><summary class="small" style="cursor:pointer;color:var(--muted)">¿Quieres autocompletar con otro documento?</summary><div style="margin-top:8px">${scanHTML(req)}</div></details>`;
 }
 function scanHTML(req) {
   const pj = req.tipoPersona === 'juridica'; const pr = P.proc.auto; const U = P.ultimoAuto && P.ultimoAuto.req === req.id ? P.ultimoAuto : null;
