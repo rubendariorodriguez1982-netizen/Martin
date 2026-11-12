@@ -42,7 +42,7 @@ export function crearApi(store, clave, ia = {}) {
         if (!ia.key) return err(501, 'Lectura con IA no configurada (ANTHROPIC_API_KEY).');
         const tk = req.headers.get('x-token'); const okTok = tk && tokOk(tk) && await store.get('tok/' + tk, { type: 'json' });
         if (!panel(req) && !okTok) return err(401, 'No autorizado.');
-        const b = await body(req); if (!b || typeof b.prompt !== 'string' || b.prompt.length > 30000) return err(400, 'Solicitud inválida');
+        const b = await body(req); if (!b || typeof b.prompt !== 'string' || b.prompt.length > 60000) return err(400, 'Solicitud inválida');
         const imgs = (Array.isArray(b.imagenes) ? b.imagenes : []).slice(0, 3).filter(x => x && /^image\/(jpeg|png|webp)$/.test(x.tipo) && typeof x.datos === 'string');
         const content = [...imgs.map(x => ({ type: 'image', source: { type: 'base64', media_type: x.tipo, data: x.datos } })), { type: 'text', text: b.prompt }];
         // Netlify AI Gateway inyecta ANTHROPIC_API_KEY y ANTHROPIC_BASE_URL; si no hay base, se usa la API de Anthropic directa

@@ -1144,7 +1144,8 @@ function muestraAccionaria() {
   y += 10; L('Documento de prueba generado por el prototipo STRADATA - sin validez.', 8);
   return new File([d.output('arraybuffer')], 'Certificado_participacion_accionaria.pdf', {type: 'application/pdf'});
 }
-async function muestraPara(req, slot) {
+async function muestraPara(req, slot) { const f = await muestraPara0(req, slot); if (f) f.demoPdf = true; return f; }
+async function muestraPara0(req, slot) {
   if (slot === 'cc') return muestraCedula('cc_A');
   if (slot === 'ccrep') return muestraCedula('cc_B');
   if (slot === 'rut') return muestraRUT();
@@ -1316,6 +1317,9 @@ function normCampo(k, c) {
   let v = String(c.valor).trim();
   if (NUM_CAMPOS.includes(k)) v = soloDig(v);
   if (FECHA_CAMPOS.includes(k) && !/^\d{4}-\d{2}-\d{2}$/.test(v)) v = parseFechaES(v) || v;
+  if (['municipio', 'departamento', 'ciudad', 'domicilio', 'lugarExpedicion', 'lugarNacimiento'].includes(k) && (!/[A-Za-zÁÉÍÓÚÑáéíóúñ]{3,}/.test(v) || /%|\d{4,}/.test(v))) v = ''; // descarta lecturas que no son un lugar
+  if (k === 'telefono') { const d = soloDig(v); v = d.length > 10 ? d.slice(0, 10) : d.length >= 7 ? d : ''; }
+  if (k === 'ciiu') { const m = soloDig(v).match(/\d{4}/); v = m ? m[0] : ''; }
   const conf = v ? Math.max(0, Math.min(1, +c.conf || 0)) : 0;
   return {valor: v, conf, legible: !!v && conf >= 0.6};
 }
@@ -1372,7 +1376,7 @@ async function iaExtraer({esperado, imagen, texto, onTipo, onCampo, signal, nomb
   const s = await iaInit(); if (!s && IA.modo === 'local') return ocrLocalExtraer({esperado, imagen, nombre, onTipo, onCampo, signal}); if (!s) throw {code: 'no_disponible'};
   if (imagen && !(IA.limits && IA.limits.images)) throw {code: 'images_unavailable'};
   const nota = imagen ? 'La imagen adjunta es un documento cargado por un tercero en un formulario de vinculación.' : 'A continuación está el texto extraído de un PDF cargado por un tercero, entre las marcas <documento>.';
-  const input = promptIA(esperado, nota) + (texto ? `\n\n<documento>\n${texto.slice(0, 14000)}\n</documento>` : '');
+  const input = promptIA(esperado, nota) + (texto ? `\n\n<documento>\n${texto.slice(0, 24000)}\n</documento>` : '');
   let pend = ''; const out = {tipo: null, conf: 0, campos: {}};
   const eat = line => {
     line = line.trim().replace(/^```\w*/, '').replace(/```$/, '').trim(); if (!line.startsWith('{')) return; let o; try { o = JSON.parse(line); } catch (e) { return; }
@@ -1422,11 +1426,12 @@ async function procesarDocumento(file, slotDef, req, onStep, onCampo, popts = {}
     campos = ({RUT: parseRUT, CAMARA: parseCamara, CEDULA: parseCedulaTexto, BANCARIA: parseBancaria, ACCIONARIA: parseAccionaria})[tipo]?.(texto) || {};
     motor = 'Lectura real · capa de texto del PDF (pdf.js) + parser STRADATA';
     const tot = Object.keys(campos).length, llenos = Object.values(campos).filter(c => c.valor).length;
-    if (tipo === 'OTRO' || !tot || llenos / tot < 0.75) {
+    const iaReal = !file.demoPdf && (await iaInit()) && IA.modo !== 'local'; // documentos reales: la IA lee todo el texto (los formatos de DIAN y Cámaras varían mucho)
+    if (tipo === 'OTRO' || !tot || llenos / tot < 0.75 || iaReal) {
       await step('extraer', {ia: true});
       try { const r = await iaExtraer({esperado, texto, signal, onTipo: t => onStep && onStep('extraer', {ia: true, tipo: t}), onCampo: (k, c, o) => emitir(k, c, o.tipo)});
         if (tipo === 'OTRO') { tipo = r.tipo; confClasif = r.conf; campos = {}; }
-        Object.entries(r.campos).forEach(([k, c]) => { if (!campos[k] || !campos[k].valor) campos[k] = c; });
+        Object.entries(r.campos).forEach(([k, c]) => { if (c && c.valor) campos[k] = c; else if (!campos[k]) campos[k] = c; }); // prima lo que leyó la IA; el parser solo llena vacíos
         motor = 'Lectura real · capa de texto del PDF + IA documental (Claude)'; usoIA = true;
       } catch (e) { if (cancelado()) throw {code: 'cancelado'}; iaError = e;
         if (tipo === 'OTRO' && String(texto || '').replace(/\s/g, '').length > 150 && !(esperado !== 'AUTO' && tipoPorNombre(file.name) === esperado)) { motor = 'Se leyó el texto del PDF y no corresponde a ninguno de los documentos solicitados.'; } // contenido legible y ajeno: se rechaza (R1)
