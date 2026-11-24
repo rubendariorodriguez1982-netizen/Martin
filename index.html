@@ -512,6 +512,7 @@ textarea.inp{height:auto}
 const APP = {
   /* true solo cuando kyc.stradata.co exista en el DNS y sirva el portal con datos compartidos. Mientras sea false, lo que se ENVÍA al tercero es un enlace que sí abre. */
   dominioActivo: false,
+  webUrl: 'https://stradata-kyc.netlify.app', // versión web publicada: enlace enmascarado y datos compartidos entre dispositivos
   version: '0.9.0-prototipo',
   artifactUrl: 'https://claude.ai/artifact/2FqctwT4KRtfizX8ZQa7nU',
   dominio: 'https://kyc.stradata.co',
@@ -1384,15 +1385,27 @@ async function iaExtraer({esperado, imagen, texto, onTipo, onCampo, signal, nomb
     if (o.tipo && !o.campo) { out.tipo = String(o.tipo).toUpperCase().replace('CÁMARA', 'CAMARA').replace('CÉDULA', 'CEDULA'); if (!['CEDULA', 'RUT', 'CAMARA', 'BANCARIA', 'ACCIONARIA'].includes(out.tipo)) out.tipo = 'OTRO'; out.conf = Math.max(0, Math.min(1, +o.confianza || 0.8)); onTipo && onTipo(out.tipo, out.conf); }
     else if (o.campo) { const k = String(o.campo); const c = normCampo(k, {valor: o.valor, conf: o.confianza}); out.campos[k] = c; onCampo && onCampo(k, c, out); }
   };
-  const opts = {modelTier: 'quick', signal, onText: ({delta}) => { const ls = (pend + delta).split('\n'); pend = ls.pop(); ls.forEach(eat); }};
+  let todo = '';
+  const opts = {modelTier: 'quick', signal, onText: ({delta}) => { todo += delta; const ls = (pend + delta).split('\n'); pend = ls.pop(); ls.forEach(eat); }};
+  const rescatar = () => { // la respuesta no vino en líneas JSON: se aceptan objeto o arreglo (con o sin ```json)
+    const t = todo.replace(/```(?:json)?/gi, '').trim(); let o = null; try { o = JSON.parse(t); } catch (e) { const a = t.indexOf('{'), b = t.lastIndexOf('}'), c = t.indexOf('['), d = t.lastIndexOf(']'); try { o = JSON.parse(c >= 0 && c < a ? t.slice(c, d + 1) : t.slice(a, b + 1)); } catch (e2) { o = null; } }
+    if (!o) { (t.match(/\{[^{}]*\}/g) || []).forEach(eat); return; }
+    const arr = Array.isArray(o) ? o : null; if (arr) { arr.forEach(x => eat(JSON.stringify(x))); return; }
+    if (o.tipo) eat(JSON.stringify({tipo: o.tipo, confianza: o.confianza ?? o.conf ?? 0.8}));
+    const campos = o.campos || o.fields || o.datos || Object.fromEntries(Object.entries(o).filter(([k]) => !['tipo', 'confianza', 'conf'].includes(k)));
+    if (Array.isArray(campos)) campos.forEach(x => eat(JSON.stringify(x)));
+    else Object.entries(campos || {}).forEach(([k, v]) => eat(JSON.stringify(v && typeof v === 'object' ? {campo: k, valor: v.valor ?? v.value ?? '', confianza: v.confianza ?? v.conf ?? 0.85} : {campo: k, valor: v, confianza: 0.85})));
+  };
   if (imagen) opts.images = imagen;
-  try { await s(input, opts); if (pend) eat(pend); if (!out.tipo) throw {code: 'invalid_json'}; }
+  const t0 = Date.now();
+  try { await s(input, opts); if (pend) eat(pend); if (!out.tipo || !Object.keys(out.campos).length) rescatar(); if (!out.tipo && Object.keys(out.campos).length && esperado && esperado !== 'AUTO') out.tipo = esperado; if (!out.tipo) throw {code: 'invalid_json', message: 'respuesta sin formato (' + todo.length + ' caracteres)'}; out.diag = {ms: Date.now() - t0, campos: Object.values(out.campos).filter(c => c.valor).length, chars: todo.length}; }
   catch (e) { if (IA.modo === 'servidor' && imagen && !(signal && signal.aborted)) { console.warn('IA servidor', e); const r = await ocrLocalExtraer({esperado, imagen, nombre, onTipo, onCampo, signal}); r.iaFallo = (e && (e.message || e.code)) || 'error'; return r; } throw e; } // si el servicio de IA falla, OCR en el navegador
   return out;
 }
 function iaMotivo(e) {
   const M = {demo: 'documento de ejemplo del escenario', no_disponible: 'lectura automática no disponible en esta vista', servidor: 'el servicio de lectura no respondió', not_granted: 'no se autorizó el uso de Claude en esta página', images_unavailable: 'esta vista no puede enviar imágenes a Claude', rate_limited: 'se alcanzó el límite de uso; intenta más tarde', image_rejected: 'la imagen no es válida o supera el tamaño permitido', refused: 'el modelo no procesó este documento', session_expired: 'la sesión expiró; vuelve a iniciar sesión', sampling_disabled: 'Claude no está habilitado para esta cuenta', invalid_json: 'la respuesta no tuvo el formato esperado'};
   if (e && e.code === 'servidor' && e.message) return `el servicio de lectura no respondió (${e.message})`;
+  if (e && e.code === 'invalid_json' && e.message) return e.message;
   return M[e && e.code] || `error de lectura (${(e && e.code) || 'desconocido'})`;
 }
 function slotPara(req, tipo) { const pj = req.tipoPersona === 'juridica'; return ({CEDULA: pj ? 'ccrep' : 'cc', RUT: 'rut', BANCARIA: 'banco', CAMARA: pj ? 'ccio' : null, ACCIONARIA: pj ? 'accion' : null})[tipo] || null; }
@@ -1434,8 +1447,8 @@ async function procesarDocumento(file, slotDef, req, onStep, onCampo, popts = {}
       try { const r = await iaExtraer({esperado, texto, signal, onTipo: t => onStep && onStep('extraer', {ia: true, tipo: t}), onCampo: (k, c, o) => emitir(k, c, o.tipo)});
         if (tipo === 'OTRO') { tipo = r.tipo; confClasif = r.conf; campos = {}; }
         Object.entries(r.campos).forEach(([k, c]) => { if (c && c.valor) campos[k] = c; else if (!campos[k]) campos[k] = c; }); // prima lo que leyó la IA; el parser solo llena vacíos
-        motor = 'Lectura real · capa de texto del PDF + IA documental (Claude)'; usoIA = true;
-      } catch (e) { if (cancelado()) throw {code: 'cancelado'}; iaError = e;
+        motor = 'Lectura real · capa de texto del PDF + IA documental (Claude)' + (r.diag ? ` · ${r.diag.campos} datos leídos por la IA en ${(r.diag.ms / 1000).toFixed(1)} s` : ''); usoIA = true;
+      } catch (e) { if (cancelado()) throw {code: 'cancelado'}; iaError = e; motor += ' · la IA no respondió: ' + iaMotivo(e);
         if (tipo === 'OTRO' && String(texto || '').replace(/\s/g, '').length > 150 && !(esperado !== 'AUTO' && tipoPorNombre(file.name) === esperado)) { motor = 'Se leyó el texto del PDF y no corresponde a ninguno de los documentos solicitados.'; } // contenido legible y ajeno: se rechaza (R1)
         else if (tipo === 'OTRO') { tipo = tipoSinLectura(); confClasif = 0.5; campos = {}; (CAMPOS_TIPO[tipo] || []).forEach(k => campos[k] = {valor: '', conf: 0, legible: false}); sinLectura = true; motor = 'Lectura automática no disponible: ' + iaMotivo(e) + '. Pendiente de verificación manual.'; }
       }
@@ -1920,7 +1933,7 @@ function render() {
     else if (S.view === 'documentacion') html = vistaDocs();
     else html = vistaTablero();
   } catch (e) { console.error(e); html = `<div class="panel empty"><h3>No pudimos mostrar esta vista</h3><p>Ocurrió un error inesperado con los datos de esta pantalla. Los datos no se modificaron.</p><p class="tiny mono">${esc(e.message || e)}</p><button class="btn" data-a="nav" data-v="tablero">Volver a solicitudes</button></div>`; }
-  $('#main').innerHTML = html;
+  $('#main').innerHTML = (dominioPendiente() ? bannerWeb() : '') + html;
   hidratar($('#main'));
   renderSim();
 }
@@ -2186,7 +2199,10 @@ async function hidratar(root) {
 }
 
 /* ---------- Invitación ---------- */
-function avisoDominio(r) { return `<div class="note note-warn small"><b>kyc.stradata.co todavía no existe en el DNS</b>, así que no se envía: abriría “No se puede acceder a este sitio web”. Se envía el enlace del prototipo en claude.ai, que solo abre quien tenga acceso a este artifact (compártelo desde el menú Compartir). Con el dominio activo, el tercero recibirá <span class="mono">${esc(enlaceTercero(r))}</span>.</div>`; }
+function bannerWeb() { // en claude.ai la barra de direcciones siempre dice claude.ai: la versión con enlace enmascarado es la web
+  return `<div class="note note-warn" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:16px"><span style="flex:1;min-width:240px"><b>Esta vista (claude.ai) no puede enmascarar el enlace.</b> Para enviar invitaciones con dirección STRADATA, que el tercero abra desde su celular, usa la versión web: <span class="mono">${esc(APP.webUrl.replace('https://', ''))}</span>.</span><a class="btn btn-primary" href="${esc(APP.webUrl)}" target="_blank" rel="noopener">Abrir versión web</a></div>`;
+}
+function avisoDominio(r) { return `<div class="note note-warn small"><b>Desde claude.ai el enlace no se puede enmascarar.</b> Se envía el enlace de este prototipo (claude.ai), que solo abre quien tenga acceso al artifact. Para enviar <span class="mono">${esc(APP.webUrl.replace('https://', ''))}/vinculacion/solicitud/…</span> crea la solicitud en la <a href="${esc(APP.webUrl)}" target="_blank" rel="noopener">versión web</a>.</div>`; }
 function textoWA(r) { return `Hola, ${r.tercero.nombre || 'buen día'}.\n\n${r.entidadSolicitante} ha iniciado un proceso de vinculación y conocimiento del cliente (${r.motivo || r.tipoVinculacion}).\n\nPara completar el proceso, te invitamos a diligenciar el formulario KYC y adjuntar los documentos solicitados mediante el siguiente enlace:\n\n${enlaceEnviable(r)}\n\nPuedes realizar el proceso desde tu celular o computador. Fecha límite: ${fmtF(r.fechaLimite)}.\n\nGracias.`; }
 function asuntoMail(r) { return `${r.entidadSolicitante} · Proceso de vinculación y conocimiento del cliente`; }
 function htmlMail(r) {

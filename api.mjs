@@ -63,13 +63,15 @@ export function crearApi(store, clave, ia = {}) {
             body: JSON.stringify({ model, max_tokens: 1500, stream: true, messages: [{ role: 'user', content }] }) });
           if (r.ok) { // se reenvía el texto a medida que llega (el formulario se llena en vivo y no se agota el tiempo de la función)
             const enc = new TextEncoder(), dec = new TextDecoder();
+            const t0 = Date.now(); let chars = 0, tokOut = 0;
             const flujo = new ReadableStream({ async start(ctrl) { const rd = r.body.getReader(); let buf = '';
               try { for (;;) { const { done, value } = await rd.read(); if (done) break; buf += dec.decode(value, { stream: true }); let i;
-                while ((i = buf.indexOf('\n')) >= 0) { const l = buf.slice(0, i).trim(); buf = buf.slice(i + 1); if (!l.startsWith('data:')) continue; try { const ev = JSON.parse(l.slice(5)); if (ev.type === 'content_block_delta' && ev.delta && ev.delta.text) ctrl.enqueue(enc.encode(ev.delta.text)); } catch (e) {} } } }
-              finally { ctrl.close(); } } });
+                while ((i = buf.indexOf('\n')) >= 0) { const l = buf.slice(0, i).trim(); buf = buf.slice(i + 1); if (!l.startsWith('data:')) continue; try { const ev = JSON.parse(l.slice(5)); if (ev.type === 'content_block_delta' && ev.delta && ev.delta.text) { chars += ev.delta.text.length; ctrl.enqueue(enc.encode(ev.delta.text)); } if (ev.type === 'message_delta' && ev.usage) tokOut = ev.usage.output_tokens; if (ev.type === 'error') console.log(JSON.stringify({ ia: 'error_stream', modelo: model, error: ev.error && ev.error.type })); } catch (e) {} } } }
+              catch (e) { console.log(JSON.stringify({ ia: 'corte', modelo: model, ms: Date.now() - t0, chars, error: String(e).slice(0, 120) })); }
+              finally { console.log(JSON.stringify({ ia: 'fin', modelo: model, ms: Date.now() - t0, chars, tokOut, imagenes: imgs.length, promptChars: b.prompt.length })); ctrl.close(); } } });
             return new Response(flujo, { headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store', 'x-modelo': model } });
           }
-          ultimo = r.status; if (![400, 404].includes(r.status)) break; // modelo no disponible: se intenta el siguiente
+          ultimo = r.status; console.log(JSON.stringify({ ia: 'rechazo', modelo: model, status: r.status, detalle: (await r.text()).slice(0, 200) })); if (![400, 404].includes(r.status)) break; // modelo no disponible: se intenta el siguiente
         }
         return err(ultimo === 429 ? 429 : 502, 'El servicio de IA no respondió (' + ultimo + ').');
       }
