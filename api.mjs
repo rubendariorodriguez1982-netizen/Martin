@@ -57,21 +57,26 @@ export function crearApi(store, clave, ia = {}) {
         // Netlify AI Gateway inyecta ANTHROPIC_API_KEY y ANTHROPIC_BASE_URL; si no hay base, se usa la API de Anthropic directa
         const base = (ia.base || 'https://api.anthropic.com').replace(/\/+$/, '');
         const modelos = [...new Set([ia.modelo, 'claude-haiku-5-5', 'claude-sonnet-5-5', 'claude-haiku-4-5', 'claude-sonnet-4-5-20250929'].filter(Boolean))];
-        let ultimo = 0;
+        let ultimo = 0, detalleUlt = '';
         for (const model of modelos) {
-          const r = await (ia.fetch || fetch)(base + '/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': ia.key, 'anthropic-version': '2023-06-01' },
-            body: JSON.stringify({ model, max_tokens: 1500, stream: true, messages: [{ role: 'user', content }] }) });
+          // sin razonamiento extendido: los tokens se van a la respuesta (con razonamiento la salida llegaba vacía)
+          const pedir = conThinking => (ia.fetch || fetch)(base + '/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': ia.key, 'anthropic-version': '2023-06-01' },
+            body: JSON.stringify({ model, max_tokens: 3000, stream: true, ...(conThinking ? { thinking: { type: 'disabled' } } : {}), messages: [{ role: 'user', content }] }) });
+          let r = await pedir(true);
+          if (r.status === 400) { const d = await r.clone().text(); if (/thinking/i.test(d)) r = await pedir(false); }
           if (r.ok) { // se reenvía el texto a medida que llega (el formulario se llena en vivo y no se agota el tiempo de la función)
             const enc = new TextEncoder(), dec = new TextDecoder();
-            const t0 = Date.now(); let chars = 0, tokOut = 0;
+            const t0 = Date.now(); let chars = 0, tokOut = 0; const bloques = {};
             const flujo = new ReadableStream({ async start(ctrl) { const rd = r.body.getReader(); let buf = '';
               try { for (;;) { const { done, value } = await rd.read(); if (done) break; buf += dec.decode(value, { stream: true }); let i;
-                while ((i = buf.indexOf('\n')) >= 0) { const l = buf.slice(0, i).trim(); buf = buf.slice(i + 1); if (!l.startsWith('data:')) continue; try { const ev = JSON.parse(l.slice(5)); if (ev.type === 'content_block_delta' && ev.delta && ev.delta.text) { chars += ev.delta.text.length; ctrl.enqueue(enc.encode(ev.delta.text)); } if (ev.type === 'message_delta' && ev.usage) tokOut = ev.usage.output_tokens; if (ev.type === 'error') console.log(JSON.stringify({ ia: 'error_stream', modelo: model, error: ev.error && ev.error.type })); } catch (e) {} } } }
+                while ((i = buf.indexOf('\n')) >= 0) { const l = buf.slice(0, i).trim(); buf = buf.slice(i + 1); if (!l.startsWith('data:')) continue; try { const ev = JSON.parse(l.slice(5)); if (ev.type === 'content_block_delta' && ev.delta && ev.delta.text) { chars += ev.delta.text.length; ctrl.enqueue(enc.encode(ev.delta.text)); } if (ev.type === 'message_delta' && ev.usage) tokOut = ev.usage.output_tokens; if (ev.type === 'content_block_start' && ev.content_block) bloques[ev.content_block.type] = (bloques[ev.content_block.type] || 0) + 1; if (ev.type === 'error') console.log(JSON.stringify({ ia: 'error_stream', modelo: model, error: ev.error && ev.error.type })); } catch (e) {} } } }
               catch (e) { console.log(JSON.stringify({ ia: 'corte', modelo: model, ms: Date.now() - t0, chars, error: String(e).slice(0, 120) })); }
-              finally { console.log(JSON.stringify({ ia: 'fin', modelo: model, ms: Date.now() - t0, chars, tokOut, imagenes: imgs.length, promptChars: b.prompt.length })); ctrl.close(); } } });
+              finally { console.log(JSON.stringify({ ia: 'fin', modelo: model, ms: Date.now() - t0, chars, tokOut, imagenes: imgs.length, promptChars: b.prompt.length, bloques })); ctrl.close(); } } });
             return new Response(flujo, { headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store', 'x-modelo': model } });
           }
-          ultimo = r.status; console.log(JSON.stringify({ ia: 'rechazo', modelo: model, status: r.status, detalle: (await r.text()).slice(0, 200) })); if (![400, 404].includes(r.status)) break; // modelo no disponible: se intenta el siguiente
+          ultimo = r.status; detalleUlt = (await r.text()).slice(0, 300); console.log(JSON.stringify({ ia: 'rechazo', modelo: model, status: r.status, detalle: detalleUlt.slice(0, 200) }));
+          if (/input_tokens_exceeded|Request size exceeds/i.test(detalleUlt)) return err(413, 'documento_grande'); // límite del plan de Netlify: el navegador reintenta con menos texto
+          if (![400, 404].includes(r.status)) break; // modelo no disponible: se intenta el siguiente
         }
         return err(ultimo === 429 ? 429 : 502, 'El servicio de IA no respondió (' + ultimo + ').');
       }

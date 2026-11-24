@@ -1286,7 +1286,7 @@ function iaInit() {
       IA.fn = async (input, opts = {}) => { const imgs = []; for (const b of (opts.images ? [].concat(opts.images) : [])) imgs.push({tipo: b.type || 'image/jpeg', datos: await blobB64(b)});
         const h = {'content-type': 'application/json'}; if (Remoto.clave) h['x-clave'] = Remoto.clave; if (Remoto.token) h['x-token'] = Remoto.tokenEscritura || Remoto.token;
         const r = await fetch(Remoto.base() + '/ia', {method: 'POST', headers: h, body: JSON.stringify({prompt: input, imagenes: imgs}), signal: opts.signal});
-        if (!r.ok) { let m = ''; try { m = (await r.json()).error; } catch (e) {} throw {code: r.status === 429 ? 'rate_limited' : 'servidor', message: m}; }
+        if (!r.ok) { let m = ''; try { m = (await r.json()).error; } catch (e) {} throw {code: r.status === 429 ? 'rate_limited' : r.status === 413 ? 'grande' : 'servidor', message: m}; }
         const rd = r.body.getReader(), dec = new TextDecoder(); let text = ''; for (;;) { const {done, value} = await rd.read(); if (done) break; const delta = dec.decode(value, {stream: true}); text += delta; opts.onText && opts.onText({text, delta}); } return {text}; };
       return IA.fn; }
     IA.modo = 'local'; IA.fn = null; return null;
@@ -1374,11 +1374,22 @@ async function ocrLocalExtraer({esperado, imagen, nombre, onTipo, onCampo, signa
   for (const [k, c] of Object.entries(campos)) { c.conf = Math.min(c.conf || 0, 0.78); if (c.valor) { onCampo && onCampo(k, c, {tipo}); await sleep(60); } }
   return {tipo, conf, campos, local: true, texto, confOCR: (data.confidence || 0) / 100};
 }
-async function iaExtraer({esperado, imagen, texto, onTipo, onCampo, signal, nombre}) {
+function textoParaIA(t, max) { // documentos largos (Cámara de Comercio): se conserva el inicio y los párrafos con los datos que se buscan
+  t = String(t || '').replace(/[ \t]+/g, ' ').replace(/\n{2,}/g, '\n').trim(); if (t.length <= max) return t;
+  const claves = /RAZ[OÓ]N SOCIAL|NOMBRE|\bNIT\b|IDENTIFICACI[OÓ]N TRIBUTARIA|CONSTITU|FECHA DE (MATR[IÍ]CULA|RENOVACI|EXPEDICI|GENERACI)|DOMICILIO|DIRECCI[OÓ]N|MUNICIPIO|DEPARTAMENTO|TEL[EÉ]FONO|CORREO|CIIU|ACTIVIDAD|C[OÓ]DIGO|REPRESENTA|GERENTE|SUPLENTE|NOMBRAMIENTO|FACULTADES|MATR[IÍ]CULA|ESTADO|TIPO DE SOCIEDAD|SOCIEDAD POR ACCIONES|RESPONSABILIDAD|C\.C\.|C[EÉ]DULA/i;
+  const ls = t.split('\n'); const keep = new Set(); ls.forEach((l, i) => { if (claves.test(l)) for (let j = Math.max(0, i - 1); j <= Math.min(ls.length - 1, i + 2); j++) keep.add(j); });
+  let out = t.slice(0, Math.round(max * 0.35)) + '\n[…]\n'; for (const i of [...keep].sort((a, b) => a - b)) { if (out.length + ls[i].length + 1 > max) break; if (!out.includes(ls[i])) out += ls[i] + '\n'; }
+  return out;
+}
+async function iaExtraer(args) {
+  try { return await iaExtraer1(args, 14000); }
+  catch (e) { if (e && e.code === 'grande' && args.texto && !(args.signal && args.signal.aborted)) return iaExtraer1(args, 6000); throw e; } // límite de tamaño del plan: se reintenta con menos texto
+}
+async function iaExtraer1({esperado, imagen, texto, onTipo, onCampo, signal, nombre}, maxTexto = 14000) {
   const s = await iaInit(); if (!s && IA.modo === 'local') return ocrLocalExtraer({esperado, imagen, nombre, onTipo, onCampo, signal}); if (!s) throw {code: 'no_disponible'};
   if (imagen && !(IA.limits && IA.limits.images)) throw {code: 'images_unavailable'};
   const nota = imagen ? 'La imagen adjunta es un documento cargado por un tercero en un formulario de vinculación.' : 'A continuación está el texto extraído de un PDF cargado por un tercero, entre las marcas <documento>.';
-  const input = promptIA(esperado, nota) + (texto ? `\n\n<documento>\n${texto.slice(0, 24000)}\n</documento>` : '');
+  const input = promptIA(esperado, nota) + (texto ? `\n\n<documento>\n${textoParaIA(texto, maxTexto)}\n</documento>` : '');
   let pend = ''; const out = {tipo: null, conf: 0, campos: {}};
   const eat = line => {
     line = line.trim().replace(/^```\w*/, '').replace(/```$/, '').trim(); if (!line.startsWith('{')) return; let o; try { o = JSON.parse(line); } catch (e) { return; }
@@ -1406,6 +1417,7 @@ function iaMotivo(e) {
   const M = {demo: 'documento de ejemplo del escenario', no_disponible: 'lectura automática no disponible en esta vista', servidor: 'el servicio de lectura no respondió', not_granted: 'no se autorizó el uso de Claude en esta página', images_unavailable: 'esta vista no puede enviar imágenes a Claude', rate_limited: 'se alcanzó el límite de uso; intenta más tarde', image_rejected: 'la imagen no es válida o supera el tamaño permitido', refused: 'el modelo no procesó este documento', session_expired: 'la sesión expiró; vuelve a iniciar sesión', sampling_disabled: 'Claude no está habilitado para esta cuenta', invalid_json: 'la respuesta no tuvo el formato esperado'};
   if (e && e.code === 'servidor' && e.message) return `el servicio de lectura no respondió (${e.message})`;
   if (e && e.code === 'invalid_json' && e.message) return e.message;
+  if (e && e.code === 'grande') return 'el documento supera el tamaño que permite el plan de IA de Netlify';
   return M[e && e.code] || `error de lectura (${(e && e.code) || 'desconocido'})`;
 }
 function slotPara(req, tipo) { const pj = req.tipoPersona === 'juridica'; return ({CEDULA: pj ? 'ccrep' : 'cc', RUT: 'rut', BANCARIA: 'banco', CAMARA: pj ? 'ccio' : null, ACCIONARIA: pj ? 'accion' : null})[tipo] || null; }
